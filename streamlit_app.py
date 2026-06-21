@@ -5,7 +5,7 @@ st.set_page_config(page_title="Steam Sales Predictions", page_icon= "🎮") #emo
 
 st.title("Steam Sales Prediction 🎮") #Titel auf der Seite
 st.subheader("Wie viele Reviews wird ihr Spiel bekommen") #Selbsterklärend ein Untertitel
-st.divider #eine Trennlinie
+st.divider () #eine Trennlinie
 
 my_Description = st.text_area("Spielbeschreibung", placeholder="Bitte beschreibe dein Spiel") #Das Textfeld für die Spielbeschreibung
 my_Tags = st.text_input("Tags", placeholder= "Bitte tragen sie hier komma getrennt die Tags ihres Spiels ein bsp: Indie, Farming, singleplayer") #Textfeld für die Tags
