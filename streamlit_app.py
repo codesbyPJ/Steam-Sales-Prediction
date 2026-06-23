@@ -1,6 +1,12 @@
 import streamlit as st
 import numpy as np 
+import pickle as pi
+from scipy.sparse import hstack, csr_matrix
 
+#Modell, Vectorizer und den Scaler laden
+with open("model.pkl","rb") as f: my_model = pi.load(f) #"rb" bedeutet read binary also es öffnet die datei im lesemodus als binär, f ist das Dateiobjekt
+with open("tfidf.pkl","rb") as f: my_tfidf = pi.load(f)
+with open("scaler.pkl","rb") as f: my_scaler = pi.load(f)
 st.set_page_config(page_title="Steam Sales Predictions", page_icon= "🎮") #emoji from https://emojipedia.org/video-game 
 
 st.title("Steam Sales Prediction 🎮") #Titel auf der Seite
