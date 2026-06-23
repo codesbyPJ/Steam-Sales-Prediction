@@ -26,4 +26,27 @@ if st.button("Vorhersage Starten"): #Interessanterweise wird in Streamlit der bu
     if not my_Description or not my_Tags: #failsave für wenn beschreibung bzw tags leer
         st.warning("Bitte Beschreibung und Tags angeben") #warnung
     else:
-        st.info("Modell noch nicht geladen - bitte warten") #Placeholder bis das modell fertig ist.
+        #Text wird kombiniert und durch tfidf gejagt
+        my_text = f"{my_Description} {my_Tags} {my_Genres}"
+        my_text_features = my_tfidf.transform([my_text])
+        #Numeric Features zusammenstellen
+        my_num_features = np.array([[
+            my_Price,
+            int(my_Achievements >0),
+            len([t for t in my_Tags.split(",") if t.strip()]), #Die Zeile war pain da hats 3 versuche gebraucht die richtig zu machen, dies zählt die anzahl der tags und splittet den string nach jedem Komma und filtert leere Einträge heraus und zählt wie viele übrig bleiben
+            len(my_Description),
+            int(my_Windows),
+            int(my_Mac),
+            int(my_Linux),
+            2026 #Das ist das release Jahr als feature das modell wurde mit einem release jahr mittrainiert also muss die app auch ein jahr mitgeben, 2026 ist jetzt gerade also deswegen
+            ]])
+
+        # Scaler anwenden und die Features zusammenführen
+        my_num_scaled = my_scaler.transform(my_num_features)
+        my_input = hstack([my_text_features, csr_matrix(my_num_scaled)])
+
+        #Jetzt machen wir eine Vorhersage und die Log-Transformation rückgängig
+        my_prediction_log = my_model.predict(my_input)[0]
+        my_prediction = int(np.expm1(my_prediction_log))
+        
+        st.success(f"Vorhergesagte Reviews: **{my_prediction:,}**")
