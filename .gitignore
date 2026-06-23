@@ -219,3 +219,6 @@ __marimo__/
 
 # ignore csv
 games.csv
+
+#ignore .pkl
+*.pkl 
