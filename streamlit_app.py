@@ -7,6 +7,8 @@ from scipy.sparse import hstack, csr_matrix
 with open("model.pkl","rb") as f: my_model = pi.load(f) #"rb" bedeutet read binary also es öffnet die datei im lesemodus als binär, f ist das Dateiobjekt
 with open("tfidf.pkl","rb") as f: my_tfidf = pi.load(f)
 with open("scaler.pkl","rb") as f: my_scaler = pi.load(f)
+with open("ridge.pkl","rb") as f: my_ridge = pi.load(f) 
+with open("rf.pkl","rb") as f: my_rf = pi.load(f)
 st.set_page_config(page_title="Steam Sales Predictions", page_icon= "🎮") #emoji from https://emojipedia.org/video-game 
 
 st.title("Steam Sales Prediction 🎮") #Titel auf der Seite
@@ -45,8 +47,15 @@ if st.button("Vorhersage Starten"): #Interessanterweise wird in Streamlit der bu
         my_num_scaled = my_scaler.transform(my_num_features)
         my_input = hstack([my_text_features, csr_matrix(my_num_scaled)])
 
-        #Jetzt machen wir eine Vorhersage und die Log-Transformation rückgängig
-        my_prediction_log = my_model.predict(my_input)[0]
-        my_prediction = int(np.expm1(my_prediction_log))
         
-        st.success(f"Vorhergesagte Reviews: **{my_prediction:,}**")
+        
+        my_pred_xgb = int(np.expm1(my_model.predict(my_input)[0]))
+        my_pred_ridge = int(np.expm1(my_ridge.predict(my_input)[0]))
+        my_pred_rf = int(np.expm1(my_rf.predict(my_input)[0]))
+
+        st.divider()
+        st.subheader("Ergebnisse")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("XGBoost", f"{my_pred_xgb:,} Reviews")
+        col2.metric("Ridge Regression", f"{my_pred_ridge:,} Reviews")
+        col3.metric("Random Forest", f"{my_pred_rf:,} Reviews")
