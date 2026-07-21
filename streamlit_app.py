@@ -1,14 +1,53 @@
 import streamlit as st
 import numpy as np 
 import pickle as pi
+import xgboost as xgb
+import torch
+from torch import nn
+from transformers import DistilBertTokenizerFast, DistilBertModel
 from scipy.sparse import hstack, csr_matrix
 
 #Modell, Vectorizer und den Scaler laden
-with open("model.pkl","rb") as f: my_model = pi.load(f) #"rb" bedeutet read binary also es öffnet die datei im lesemodus als binär, f ist das Dateiobjekt
+my_model = xgb.XGBRegressor()
+my_model.load_model("model.json")
 with open("tfidf.pkl","rb") as f: my_tfidf = pi.load(f)
 with open("scaler.pkl","rb") as f: my_scaler = pi.load(f)
 with open("ridge.pkl","rb") as f: my_ridge = pi.load(f) 
 with open("rf.pkl","rb") as f: my_rf = pi.load(f)
+with open("scaler_bert.pkl","rb") as f: my_scaler_bert = pi.load(f) #eigener Scaler, weil DistilBERT separat trainiert wurde
+
+#DistilBERT braucht dieselbe Modell-Klasse wie beim Training, sonst passt der gespeicherte Zustand nicht
+class DistilBertRegression(nn.Module):
+    def __init__(self, num_numeric_features):
+        super().__init__()
+        self.bert = DistilBertModel.from_pretrained("distilbert-base-uncased")
+        self.regressor = nn.Sequential(
+            nn.Linear(768 + num_numeric_features, 256),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(256, 64),
+            nn.ReLU(),
+            nn.Linear(64, 1)
+        )
+
+    def forward(self, input_ids, attention_mask, numeric_features):
+        bert_output = self.bert(input_ids=input_ids, attention_mask=attention_mask)
+        cls_output = bert_output.last_hidden_state[:, 0, :]
+        combined = torch.cat([cls_output, numeric_features], dim=1)
+        return self.regressor(combined).squeeze(1)
+
+#DistilBERT + Tokenizer nur einmal laden (nicht bei jedem Klick neu) - das lädt beim ersten Start
+#automatisch die Basisgewichte von distilbert-base-uncased herunter, dafür wird Internet gebraucht
+@st.cache_resource
+def load_bert():
+    tokenizer = DistilBertTokenizerFast.from_pretrained("distilbert-base-uncased")
+    model = DistilBertRegression(num_numeric_features=8)
+    model.load_state_dict(torch.load("distilbert_model.pt", map_location="cpu"))
+    model.eval()
+    return tokenizer, model
+
+my_bert_tokenizer, my_bert_model = load_bert()
+
 st.set_page_config(page_title="Steam Sales Predictions", page_icon= "🎮") #emoji from https://emojipedia.org/video-game 
 
 st.title("Steam Sales Prediction 🎮") #Titel auf der Seite
@@ -53,9 +92,29 @@ if st.button("Vorhersage Starten"): #Interessanterweise wird in Streamlit der bu
         my_pred_ridge = int(np.expm1(my_ridge.predict(my_input)[0]))
         my_pred_rf = int(np.expm1(my_rf.predict(my_input)[0]))
 
+        #DistilBERT braucht eigenes Textformat (wie beim Training) und eigenen Scaler
+        my_bert_text = f"Tags: {my_Tags} Genres: {my_Genres} Categories:  Description: {my_Description}"
+        my_num_scaled_bert = my_scaler_bert.transform(my_num_features)
+
+        my_encoded = my_bert_tokenizer(
+            my_bert_text,
+            truncation=True,
+            padding="max_length",
+            max_length=256,
+            return_tensors="pt"
+        )
+        with torch.no_grad():
+            my_pred_log_bert = my_bert_model(
+                input_ids=my_encoded["input_ids"],
+                attention_mask=my_encoded["attention_mask"],
+                numeric_features=torch.tensor(my_num_scaled_bert, dtype=torch.float32)
+            )
+        my_pred_bert = int(np.expm1(my_pred_log_bert.item()))
+
         st.divider()
         st.subheader("Ergebnisse")
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         col1.metric("XGBoost", f"{my_pred_xgb:,} Reviews")
         col2.metric("Ridge Regression", f"{my_pred_ridge:,} Reviews")
         col3.metric("Random Forest", f"{my_pred_rf:,} Reviews")
+        col4.metric("DistilBERT", f"{my_pred_bert:,} Reviews")
