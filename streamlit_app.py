@@ -4,19 +4,24 @@ import pickle as pi
 import xgboost as xgb
 import torch
 from torch import nn
-from transformers import DistilBertTokenizerFast, DistilBertModel
+import requests
+from PIL import Image
+from io import BytesIO
+from torchvision.models import resnet50, ResNet50_Weights
+from transformers import AutoTokenizer, DistilBertModel
 from scipy.sparse import hstack, csr_matrix
 
-#Modell, Vectorizer und den Scaler laden
+#Modell, Vectorizer und die Scaler laden
 my_model = xgb.XGBRegressor()
 my_model.load_model("model.json")
 with open("tfidf.pkl","rb") as f: my_tfidf = pi.load(f)
-with open("scaler.pkl","rb") as f: my_scaler = pi.load(f)
+with open("numeric_scaler.pkl","rb") as f: my_numeric_scaler = pi.load(f) #ersetzt den alten scaler.pkl, Davide hat ihn umbenannt
+with open("image_scaler.pkl","rb") as f: my_image_scaler = pi.load(f) #neu, skaliert die 2048 ResNet-Features
 with open("ridge.pkl","rb") as f: my_ridge = pi.load(f) 
 with open("rf.pkl","rb") as f: my_rf = pi.load(f)
-with open("scaler_bert.pkl","rb") as f: my_scaler_bert = pi.load(f) #eigener Scaler, weil DistilBERT separat trainiert wurde
+with open("scaler_bert.pkl","rb") as f: my_scaler_bert = pi.load(f) #eigener Scaler für DistilBERT, unabhängig von den Bild-Features
 
-#DistilBERT braucht dieselbe Modell-Klasse wie beim Training, sonst passt der gespeicherte Zustand nicht
+#DistilBERT braucht dieselbe Modell-Klasse wie beim Training - unverändert, nutzt weiterhin nur Text + numerische Features, keine Bilder
 class DistilBertRegression(nn.Module):
     def __init__(self, num_numeric_features):
         super().__init__()
@@ -36,17 +41,44 @@ class DistilBertRegression(nn.Module):
         combined = torch.cat([cls_output, numeric_features], dim=1)
         return self.regressor(combined).squeeze(1)
 
-#DistilBERT + Tokenizer nur einmal laden (nicht bei jedem Klick neu) - das lädt beim ersten Start
-#automatisch die Basisgewichte von distilbert-base-uncased herunter, dafür wird Internet gebraucht
+#DistilBERT + Tokenizer nur einmal laden (nicht bei jedem Klick neu)
 @st.cache_resource
 def load_bert():
-    tokenizer = DistilBertTokenizerFast.from_pretrained("distilbert-base-uncased")
+    tokenizer = AutoTokenizer.from_pretrained("distilbert-base-uncased")
     model = DistilBertRegression(num_numeric_features=8)
     model.load_state_dict(torch.load("distilbert_model.pt", map_location="cpu"))
     model.eval()
     return tokenizer, model
 
 my_bert_tokenizer, my_bert_model = load_bert()
+
+#ResNet50 nur einmal laden - genau wie beim Training: eigene Klassifikations-Schicht entfernt (Identity),
+#damit als Ausgabe der 2048-dimensionale Feature-Vektor rauskommt statt einer Klassenvorhersage
+@st.cache_resource
+def load_resnet():
+    weights = ResNet50_Weights.DEFAULT
+    resnet = resnet50(weights=weights)
+    resnet.fc = torch.nn.Identity()
+    resnet.eval()
+    transform = weights.transforms()
+    return resnet, transform
+
+my_resnet, my_resnet_transform = load_resnet()
+
+def extract_resnet_feature(url):
+    """Lädt ein Bild von einer URL und wandelt es in den 2048er ResNet-Feature-Vektor um.
+    Gibt None zurück, wenn das Bild nicht geladen werden konnte."""
+    try:
+        response = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+        response.raise_for_status()
+        image = Image.open(BytesIO(response.content)).convert("RGB")
+    except Exception:
+        return None
+
+    image_tensor = my_resnet_transform(image).unsqueeze(0)
+    with torch.no_grad():
+        feature = my_resnet(image_tensor)
+    return feature.squeeze(0).numpy().astype(np.float32)
 
 st.set_page_config(page_title="Steam Sales Predictions", page_icon= "🎮") #emoji from https://emojipedia.org/video-game 
 
@@ -62,6 +94,7 @@ my_Achievements = st.number_input("Anzahl Achievements", min_value=0, value =0) 
 my_Windows = st.checkbox("Windows", value=True) #Checkbox dafür ob das game auf windows läuft, auf default = ja
 my_Linux = st.checkbox("Linux", value=False) #Checkbox dafür ob das game auf Linux läuft, standard auf false weil weniger common
 my_Mac = st.checkbox("Mac", value=False) #Checkbox dafür ob das game auf Mac, ebenfalls standard auf false
+my_ImageURL = st.text_input("Bild-URL (optional)", placeholder="z.B. Header-Image-Link von Steam - leer lassen, wenn kein Bild vorhanden") #Optionales Bildfeld, genau wie im Notebook per URL statt Upload
 
 if st.button("Vorhersage Starten"): #Interessanterweise wird in Streamlit der button hier erstellt und muss nicht vorher definiert werden 
     if not my_Description or not my_Tags: #failsave für wenn beschreibung bzw tags leer
@@ -82,17 +115,29 @@ if st.button("Vorhersage Starten"): #Interessanterweise wird in Streamlit der bu
             2026 #Das ist das release Jahr als feature das modell wurde mit einem release jahr mittrainiert also muss die app auch ein jahr mitgeben, 2026 ist jetzt gerade also deswegen
             ]])
 
-        # Scaler anwenden und die Features zusammenführen
-        my_num_scaled = my_scaler.transform(my_num_features)
-        my_input = hstack([my_text_features, csr_matrix(my_num_scaled)])
+        # Numerische Features skalieren
+        my_num_scaled = my_numeric_scaler.transform(my_num_features)
 
-        
-        
+        # Bild-Features: falls URL angegeben, echtes ResNet-Feature berechnen, sonst Nullvektor (wie im Notebook)
+        if my_ImageURL.strip():
+            with st.spinner("Lade Bild und berechne Bild-Features..."):
+                my_raw_image_feature = extract_resnet_feature(my_ImageURL.strip())
+            if my_raw_image_feature is None:
+                st.warning("Bild konnte nicht geladen werden - Vorhersage läuft ohne Bild-Feature weiter.")
+                my_image_scaled = np.zeros((1, 2048), dtype=np.float32)
+            else:
+                my_image_scaled = my_image_scaler.transform(my_raw_image_feature.reshape(1, -1))
+        else:
+            my_image_scaled = np.zeros((1, 2048), dtype=np.float32)
+
+        # Text + numerische + Bild-Features zusammenführen, exakt in Trainings-Reihenfolge
+        my_input = hstack([my_text_features, csr_matrix(my_num_scaled), csr_matrix(my_image_scaled)])
+
         my_pred_xgb = int(np.expm1(my_model.predict(my_input)[0]))
         my_pred_ridge = int(np.expm1(my_ridge.predict(my_input)[0]))
         my_pred_rf = int(np.expm1(my_rf.predict(my_input)[0]))
 
-        #DistilBERT braucht eigenes Textformat (wie beim Training) und eigenen Scaler
+        #DistilBERT braucht eigenes Textformat (wie beim Training) und eigenen Scaler - nutzt keine Bild-Features
         my_bert_text = f"Tags: {my_Tags} Genres: {my_Genres} Categories:  Description: {my_Description}"
         my_num_scaled_bert = my_scaler_bert.transform(my_num_features)
 
